@@ -1,0 +1,79 @@
+# ============================================================
+# GOD's EYE — Configuration
+# ============================================================
+
+video:
+  # Source: path to video file, RTSP URL, or camera index (0)
+  source: "0"
+  target_fps: 8
+  resolution:
+    width: 1280
+    height: 720
+
+cameras:
+  - id: "cam_01"
+    name: "Camera 1"
+    source: ""
+  - id: "cam_02"
+    name: "Camera 2"
+    source: ""
+
+detection:
+  model: "yolov8n.pt"
+  confidence: 0.40
+  iou_threshold: 0.45
+  device: "cpu"
+  classes: [0, 1, 2, 3, 5, 7]  # person, bicycle, car, motorcycle, bus, truck
+
+tracking:
+  tracker: "bytetrack.yaml"
+  history_length: 30  # frames of position history per track
+
+features:
+  density_area: 500000  # normalization area (pixels²)
+  fall_aspect_ratio_threshold: 0.6
+  fall_speed_threshold: 15.0
+  vehicle_stop_speed: 2.0
+  vehicle_stop_prev_speed: 20.0
+
+fire_detection:
+  enabled: true
+  hsv_lower: [0, 120, 200]    # H, S, V lower bound
+  hsv_upper: [25, 255, 255]   # H, S, V upper bound
+  min_area: 3000              # minimum contour area
+
+risk:
+  weights:
+    density: 0.4
+    speed_variance: 0.3
+    direction_entropy: 0.3
+  thresholds:
+    high: 0.7
+    medium: 0.4
+  anomaly_z_threshold: 2.0
+  rolling_window: 50
+
+decision:
+  crowd_risk_high: 0.7
+  crowd_risk_medium: 0.4
+  prediction_pre_alert: 0.7
+  prediction_monitor: 0.4
+
+buffer:
+  duration_seconds: 20
+  codec: "XVID"
+
+prediction:
+  lstm_weight: 0.6
+  arima_weight: 0.4
+  sequence_length: 15
+  lstm_hidden_size: 64
+  lstm_dropout: 0.2
+  arima_order: [2, 1, 2]
+  update_interval_seconds: 60
+
+storage:
+  events_dir: "data/events"
+  models_dir: "data/models"
+  logs_dir: "data/logs"
+  database: "data/gods_eye.db"
