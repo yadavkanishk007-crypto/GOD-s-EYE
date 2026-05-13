@@ -39,12 +39,16 @@ class ModelOptimizer:
         # Try to detect GPU via torch (lazy import)
         try:
             import torch
+            print(f"[HARDWARE] Torch version: {torch.__version__}")
             if torch.cuda.is_available():
                 gpu_name = torch.cuda.get_device_name(0)
                 gpu_mem = torch.cuda.get_device_properties(0).total_mem / (1024**3)
                 print(f"[HARDWARE] CUDA GPU detected: {gpu_name} ({gpu_mem:.1f} GB)")
                 ModelOptimizer._cached_device = "cuda"
                 return "cuda"
+            else:
+                print("[HARDWARE] torch.cuda.is_available() is False")
+                
             if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
                 print("[HARDWARE] MPS detected.")
                 ModelOptimizer._cached_device = "mps"
@@ -54,7 +58,7 @@ class ModelOptimizer:
         except Exception as e:
             print(f"[HARDWARE] GPU detection error: {e}")
 
-        print("[HARDWARE] CPU only detected.")
+        print("[HARDWARE] Falling back to CPU mode.")
         ModelOptimizer._cached_device = "cpu"
         return "cpu"
 

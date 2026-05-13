@@ -16,9 +16,15 @@ from typing import List
 class Event:
     event_type: str
     description: str
-    risk_level: str  # "high", "medium", "low"
+    severity_str: str  # "critical", "high", "medium", "low"
     camera_id: str
     timestamp: float
+    confidence: float = 1.0
+
+    @property
+    def risk_level(self):
+        """Alias for UI and DB compatibility."""
+        return self.severity_str
 
 
 class DecisionEngine:
@@ -43,49 +49,49 @@ class DecisionEngine:
         events = []
         now = time.time()
 
-        def add_event(evt_type, desc, level):
+        def add_event(evt_type, desc, level, conf=1.0):
             cooldown = self._cooldowns.get(evt_type, 10.0)
             last_time = self._last_event_times.get(evt_type, 0.0)
             if now - last_time > cooldown:
-                events.append(Event(evt_type, desc, level, camera_id, now))
+                events.append(Event(evt_type, desc, level, camera_id, now, conf))
                 self._last_event_times[evt_type] = now
 
         # ── 1. Critical Life Safety ────────────────────────────────────
         if features.fire_detected:
             add_event("Fire/Smoke Emergency",
-                      f"Fire signature detected ({features.fire_confidence:.0%})", "high")
+                      f"Fire signature detected ({features.fire_confidence:.0%})", "high", features.fire_confidence)
         elif features.smoke_detected:
             add_event("Fire/Smoke Emergency",
-                      f"Smoke signature detected ({features.smoke_confidence:.0%})", "high")
+                      f"Smoke signature detected ({features.smoke_confidence:.0%})", "high", features.smoke_confidence)
 
         # ── 2. Severe Incidents ────────────────────────────────────────
         if features.accident_detected:
             add_event("Vehicle Incident",
-                      f"Collision/sudden stop detected ({features.accident_confidence:.0%})", "high")
+                      f"Collision/sudden stop detected ({features.accident_confidence:.0%})", "high", features.accident_confidence)
 
         if features.fall_detected:
             add_event("Person Fall Detected",
-                      "Individual detected falling/collapsed", "high")
+                      "Individual detected falling/collapsed", "high", 0.90)
 
         # ── 3. Behavioral Anomalies ────────────────────────────────────
         if features.vehicle_sudden_stop and not features.accident_detected:
-            add_event("Anomalous Behavior", "Sudden collective vehicle stop", "medium")
+            add_event("Anomalous Behavior", "Sudden collective vehicle stop", "medium", 0.70)
 
         if features.speed_variance > 10.0:
-            add_event("Anomalous Behavior", "Chaotic movement patterns detected", "medium")
+            add_event("Anomalous Behavior", "Chaotic movement patterns detected", "medium", min(1.0, features.speed_variance / 20.0))
 
         # ── 4. Crowd Risk Thresholds ───────────────────────────────────
         if risk.risk_score > self.crowd_risk_high:
             add_event("High Crowd Risk",
-                      f"Critical threshold exceeded ({risk.risk_score:.2f})", "high")
+                      f"Critical threshold exceeded ({risk.risk_score:.2f})", "high", risk.risk_score)
         elif risk.risk_score > self.crowd_risk_medium:
             add_event("Elevated Crowd Activity",
-                      f"Density/speed forming risk ({risk.risk_score:.2f})", "medium")
+                      f"Density/speed forming risk ({risk.risk_score:.2f})", "medium", risk.risk_score)
 
         # ── 5. Predictive Pre-Alerts ───────────────────────────────────
         if prediction_risk is not None:
             if prediction_risk > self.crowd_risk_high:
                 add_event("Predictive Pre-Alert",
-                          f"Forecasted critical risk ({prediction_risk:.2f}) in next 5m", "medium")
+                          f"Forecasted critical risk ({prediction_risk:.2f}) in next 5m", "medium", prediction_risk)
 
         return events

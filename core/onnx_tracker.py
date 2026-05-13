@@ -69,12 +69,24 @@ class OnnxTracker:
         import onnxruntime as ort
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        opts.intra_op_num_threads = 2  # Limit threads to avoid CPU saturation with many cameras
-        opts.inter_op_num_threads = 1
-        self._session = ort.InferenceSession(self.model_path, opts,
-                                              providers=['CPUExecutionProvider'])
+        
+        # Check for GPU providers
+        available_providers = ort.get_available_providers()
+        providers = []
+        if 'CUDAExecutionProvider' in available_providers:
+            providers.append('CUDAExecutionProvider')
+            print(f"[OnnxTracker] Using GPU acceleration (CUDA)")
+        elif 'TensorrtExecutionProvider' in available_providers:
+            providers.append('TensorrtExecutionProvider')
+            print(f"[OnnxTracker] Using GPU acceleration (TensorRT)")
+        else:
+            providers.append('CPUExecutionProvider')
+            opts.intra_op_num_threads = 2
+            print(f"[OnnxTracker] Using CPU inference")
+
+        self._session = ort.InferenceSession(self.model_path, opts, providers=providers)
         self._input_name = self._session.get_inputs()[0].name
-        print(f"[OnnxTracker] Loaded {self.model_path} (threads: 2)")
+        print(f"[OnnxTracker] Loaded {self.model_path}")
 
     def unload_model(self):
         """Release model to free RAM (Strategy D: lazy unload)."""
