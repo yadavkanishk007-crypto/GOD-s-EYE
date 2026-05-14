@@ -9,8 +9,9 @@ from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QSplitter, QTabWidget, QLabel, QAction, QPushButton,
                              QFileDialog, QInputDialog, QStatusBar,
                              QMessageBox, QFrame, QScrollArea, QGridLayout)
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtCore import Qt, QSize, QTimer
 from PyQt5.QtGui import QIcon
+from core.model_optimizer import ModelOptimizer
 
 from ui.styles import LIGHT_THEME
 from ui.camera_tab import CameraTab
@@ -31,7 +32,7 @@ from core.risk_scorer import RiskScorer
 from core.decision_engine import DecisionEngine
 from core.resource_recommender import ResourceRecommender
 from core.event_buffer import EventBuffer
-from core.model_optimizer import ModelOptimizer
+
 
 from prediction.hybrid_model import HybridPredictor
 from prediction.preprocess import PredictionPreprocessor
@@ -63,6 +64,9 @@ class MainWindow(QMainWindow):
         self.camera_tabs_map = {}   # cam_id -> CameraTab widget
         self.prediction_workers = {}
         # _next_cam_index is set after config cameras are created (see _setup_ui)
+
+        # GPU override state
+        self._force_gpu_active = False
 
         # Init prediction
         pred_cfg = config.get("prediction", {})
@@ -126,6 +130,37 @@ class MainWindow(QMainWindow):
         add_cam_btn.setFixedWidth(130)
         add_cam_btn.clicked.connect(self._add_camera_tab)
         header_row.addWidget(add_cam_btn)
+
+        # ── Force GPU Button ────────────────────────────────────────────
+        self.gpu_btn = QPushButton("⚡ Force GPU: OFF")
+        self.gpu_btn.setObjectName("gpu_force_btn")
+        self.gpu_btn.setMinimumHeight(38)
+        self.gpu_btn.setFixedWidth(160)
+        self.gpu_btn.setCheckable(True)
+        self.gpu_btn.setToolTip(
+            "Force all camera pipelines to use CUDA GPU.\n"
+            "Use this if automatic GPU detection fails.\n"
+            "Active cameras will restart in GPU mode."
+        )
+        self.gpu_btn.setStyleSheet(
+            "QPushButton#gpu_force_btn {"
+            "  background-color: #e2e8f0; color: #334155;"
+            "  border: 2px solid #94a3b8; border-radius: 6px;"
+            "  font-weight: bold; font-size: 12px;"
+            "}"
+            "QPushButton#gpu_force_btn:checked {"
+            "  background-color: #16a34a; color: #ffffff;"
+            "  border: 2px solid #15803d;"
+            "}"
+            "QPushButton#gpu_force_btn:hover {"
+            "  background-color: #cbd5e1;"
+            "}"
+            "QPushButton#gpu_force_btn:checked:hover {"
+            "  background-color: #15803d;"
+            "}"
+        )
+        self.gpu_btn.clicked.connect(self._toggle_force_gpu)
+        header_row.addWidget(self.gpu_btn)
         left_layout.addLayout(header_row)
 
         # Camera Grid widget
@@ -365,6 +400,81 @@ class MainWindow(QMainWindow):
         cam_name = f"Camera {idx}"
         self._create_camera_tab(cam_id, cam_name)
 
+    # === GPU Force Override ===
+
+    def _toggle_force_gpu(self, checked):
+        """Toggle forced GPU mode — overrides ModelOptimizer's auto-detection."""
+        self._force_gpu_active = checked
+
+        if checked:
+            # Override cached device to CUDA, bypassing auto-detection
+            ModelOptimizer._cached_device = "cuda"
+            self.gpu_btn.setText("⚡ Force GPU: ON")
+            self.status_label.setText("Status: GPU mode FORCED — restarting active cameras...")
+            print("[GPU OVERRIDE] Force GPU activated — CUDA set as device.")
+
+            # Ask user before restarting active cameras
+            active = list(self.camera_workers.keys())
+            if active:
+                reply = QMessageBox.question(
+                    self, "Restart Cameras in GPU Mode?",
+                    f"{len(active)} active camera(s) will be restarted in GPU mode.\n"
+                    "This will briefly interrupt streams.\n\nContinue?",
+                    QMessageBox.Yes | QMessageBox.No,
+                    QMessageBox.Yes
+                )
+                if reply == QMessageBox.Yes:
+                    self._restart_all_cameras_with_mode()
+                else:
+                    self.status_label.setText(
+                        "Status: GPU mode ON — new cameras will use GPU. Existing unchanged."
+                    )
+            else:
+                self.status_label.setText(
+                    "Status: GPU mode FORCED — new camera streams will use GPU."
+                )
+        else:
+            # Revert to auto-detection
+            ModelOptimizer._cached_device = None  # Clear cache → next call will auto-detect
+            self.gpu_btn.setText("⚡ Force GPU: OFF")
+            self.status_label.setText("Status: GPU override OFF — reverted to auto-detection.")
+            print("[GPU OVERRIDE] Force GPU deactivated — auto-detection restored.")
+
+    def _restart_all_cameras_with_mode(self):
+        """Stop and restart every active camera pipeline with the current device setting."""
+        # Collect current sources before stopping
+        camera_sources = {}
+        for cam_id, proxy in list(self.camera_workers.items()):
+            # The source is stored on the process object
+            proc = getattr(proxy, '_process', None)
+            if proc and hasattr(proc, 'source'):
+                camera_sources[cam_id] = proc.source
+
+        if not camera_sources:
+            self.status_label.setText("Status: No active cameras to restart.")
+            return
+
+        print(f"[GPU OVERRIDE] Restarting {len(camera_sources)} camera(s): {list(camera_sources.keys())}")
+
+        # Stop all workers
+        for cam_id in list(camera_sources.keys()):
+            self._stop_camera(cam_id)
+
+        # Small delay so threads can clean up
+        device_label = "GPU (CUDA)" if self._force_gpu_active else "CPU (Auto)"
+        self.status_label.setText(f"Status: Restarting cameras on {device_label}...")
+
+        # Restart each camera after a brief pause
+        def _do_restart():
+            for cam_id, source in camera_sources.items():
+                print(f"[GPU OVERRIDE] Restarting {cam_id} on {'cuda' if self._force_gpu_active else 'auto'}")
+                self._start_pipeline(source, cam_id)
+            self.status_label.setText(
+                f"Status: All cameras restarted on {device_label}."
+            )
+
+        QTimer.singleShot(800, _do_restart)
+
     def _close_camera_tab(self, cam_id):
         """Stop and remove a camera."""
         self._stop_camera(cam_id)
@@ -405,10 +515,19 @@ class MainWindow(QMainWindow):
         dec_cfg = cfg.get("decision", {})
         buf_cfg = cfg.get("buffer", {})
 
-        # Use ModelOptimizer to get the best model
-        opt_model_path, opt_device = ModelOptimizer.get_optimized_model(
-            model_path=det_cfg.get("model", "yolov8n.pt")
-        )
+        # If Force GPU is active, ensure the override is applied before model selection
+        if self._force_gpu_active:
+            ModelOptimizer._cached_device = "cuda"
+            model_file = det_cfg.get("model", "yolov8n.pt")
+            # Use .pt model directly — Ultralytics handles CUDA natively
+            opt_model_path = model_file if model_file.endswith(".pt") else model_file.replace(".onnx", ".pt")
+            opt_device = "cuda"
+            print(f"[GPU OVERRIDE] Using forced CUDA device for {camera_id}")
+        else:
+            # Use ModelOptimizer to get the best model (auto-detection)
+            opt_model_path, opt_device = ModelOptimizer.get_optimized_model(
+                model_path=det_cfg.get("model", "yolov8n.pt")
+            )
 
         import queue
         # Create queues
